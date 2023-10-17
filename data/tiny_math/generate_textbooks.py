@@ -12,11 +12,11 @@ import requests
 
 import logging
 import time
-import re
 import json
-
+from tqdm import tqdm
 
 n_tokens = 0
+logging.basicConfig(level=logging.INFO)
 
 
 def with_retry(func, max_retries=3):
@@ -59,7 +59,7 @@ def get_completion(prompt, model="gpt-3.5-turbo", temperature=0.1, timeout=60):
 
     except requests.exceptions.Timeout as e:
         # Handle a timeout error here (e.g., logging, raising an exception, etc.)
-        print("Request timed out", e)
+        logging.warning(f"Request timed out {e}")
         return ""
 
 
@@ -90,6 +90,7 @@ def write_book(
     progress_topic,
     progress_subtopic,
 ):
+    global n_tokens
     current_chapter = progress_chapter
     current_topic = progress_topic
     current_subtopic = progress_subtopic
@@ -108,7 +109,7 @@ def write_book(
     chapters = []
     [chapters.append(x) for x in all_chapters if x not in chapters]
 
-    for configuration in book_data:
+    for configuration in tqdm(book_data, desc=f"{course}|{n_tokens} Tokens"):
         config = configuration
 
         config_chapter = config["chapter"]
@@ -118,7 +119,7 @@ def write_book(
 
         if config_chapter != current_chapter:
             if current_chapter is not None:
-                print("Generating chapter summary")
+                logging.debug(f"Generating chapter summary {current_chapter}")
                 prompt = BOOK_CHAPTER_SUMMARY_PROMPT.format(
                     title=course,
                     chapter=current_chapter,
@@ -131,7 +132,7 @@ def write_book(
                 write_to_book(course, text_excerpt)
                 write_to_prompts(course, prompt, text_excerpt)
 
-            print("Generating chapter introduction")
+            logging.debug(f"Generating chapter introduction {config_chapter}")
             prompt = BOOK_CHAPTER_INTRODUCTION_PROMPT.format(
                 title=course,
                 chapter=config_chapter,
@@ -147,7 +148,7 @@ def write_book(
             write_to_progress(course, config_chapter, config_topic, config_subtopic)
 
         if config_topic != current_topic:
-            print("Generating new section")
+            logging.debug(f"Generating section {config_topic}")
             prompt = BOOK_NEW_SECTION_PROMPT.format(
                 title=course,
                 chapter=config_chapter,
@@ -164,7 +165,7 @@ def write_book(
             write_to_prompts(course, prompt, text_excerpt)
 
         elif config_subtopic != current_subtopic:
-            print("Generating continuing section")
+            logging.debug(f"Generating subsection {current_subtopic}")
             prompt = BOOK_CONTINUING_SECTION_PROMPT.format(
                 title=course,
                 chapter=config_chapter,
@@ -211,7 +212,9 @@ def write_all_books_from_directory():
                             line.strip() for line in f.readlines()
                         ][-1].split(",")
 
-                        print("Resuming from", last_chapter, last_topic, last_subtopic)
+                        logging.warning(
+                            f"Resuming from {last_chapter}|{last_topic}|{last_subtopic}"
+                        )
 
                     for configuration_index, configuration in enumerate(book_data):
                         if (
@@ -223,10 +226,11 @@ def write_all_books_from_directory():
                             break
 
                     if progress_index == len(book_data) - 1:
-                        print(f"Skipping {course} because it already exists")
+                        logging.warning(f"Skipping {course} because it already exists")
                         continue
 
-            print("Generating", course)
+            logging.info(f"Starting {course}")
+
             with open(f"jsonl/individual-books/{filename}") as f:
                 book_data = [json.loads(line) for line in f.readlines()]
                 progress_chapter = book_data[progress_index]["chapter"]
@@ -240,7 +244,9 @@ def write_all_books_from_directory():
                     progress_topic,
                     progress_subtopic,
                 )
-                break
+
+                if i > 5:
+                    break
 
 
 write_all_books_from_directory()
