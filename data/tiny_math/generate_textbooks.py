@@ -7,17 +7,14 @@ from prompts import (
 )
 
 import os
-import yaml
-import random
-import tiktoken
+import requests
 
-import openai
+
 import logging
 import time
 import re
 import json
 
-openai.api_key = os.environ["OPENAI_API_KEY2"]
 
 n_tokens = 0
 
@@ -33,28 +30,37 @@ def with_retry(func, max_retries=3):
     raise ValueError(f"Failed to execute {func.__name__} after {max_retries} retries.")
 
 
-def get_completion(prompt):
+def get_completion(prompt, model="gpt-3.5-turbo", temperature=0.1, timeout=60):
     global n_tokens
 
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo-0613",
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a prolific, expert mathematics education textbook writer, writing a new book.",
-            },
-            {
-                "role": "user",
-                "content": prompt,
-            },
-        ],
-        temperature=1.0,
-    )
+    messages = [
+        {
+            "role": "system",
+            "content": "You are a prolific, expert mathematics education textbook writer, writing a new book.",
+        },
+        {
+            "role": "user",
+            "content": prompt,
+        },
+    ]
 
-    n_tokens += response["usage"]["total_tokens"]
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            json={"model": model, "messages": messages, "temperature": temperature},
+            headers={"Authorization": f'Bearer {os.environ["OPENAI_API_KEY2"]}'},
+            timeout=timeout,  # Set the timeout in seconds
+        )
 
-    print(f"Total tokens used: {n_tokens}")
-    return response.choices[0].message.content
+        response.raise_for_status()  # Check for HTTP request errors
+        n_tokens += response.json()["usage"]["total_tokens"]
+
+        return response.json()["choices"][0]["message"]["content"]
+
+    except requests.exceptions.Timeout as e:
+        # Handle a timeout error here (e.g., logging, raising an exception, etc.)
+        print("Request timed out", e)
+        return ""
 
 
 def generate_textbook_writing(prompt, max_tokens=512):
@@ -77,10 +83,16 @@ def write_to_progress(course, chapter, topic, subtopic):
         f.write(",".join([chapter, topic, subtopic]) + "\n")
 
 
-def write_book(course, book_data):
-    current_chapter = None
-    current_topic = None
-    current_subtopic = None
+def write_book(
+    course,
+    book_data,
+    progress_chapter,
+    progress_topic,
+    progress_subtopic,
+):
+    current_chapter = progress_chapter
+    current_topic = progress_topic
+    current_subtopic = progress_subtopic
     previous_context = None
 
     if not os.path.exists(f"textbooks-from-jsonl/{course}.md"):
@@ -132,6 +144,7 @@ def write_book(course, book_data):
             )
             write_to_book(course, text_excerpt)
             write_to_prompts(course, prompt, text_excerpt)
+            write_to_progress(course, config_chapter, config_topic, config_subtopic)
 
         if config_topic != current_topic:
             print("Generating new section")
@@ -176,18 +189,57 @@ def write_book(course, book_data):
 
 
 def write_all_books_from_directory():
-    current_book = None
+    for dir_ in ["textbooks-from-jsonl", "rlhf", "progress"]:
+        if not os.path.exists(dir_):
+            os.makedirs(dir_, exist_ok=True)
+
     for i, filename in enumerate(os.listdir("jsonl/individual-books")):
         if filename.endswith(".jsonl"):
             course = filename.split(".")[0]
 
+            progress_index = 0
+            progress_chapter = None
+            progress_topic = None
+            progress_subtopic = None
             if os.path.exists(f"textbooks-from-jsonl/{course}.md"):
-                continue
+                if os.path.exists(f"progress/{course}.txt"):
+                    with open(f"jsonl/individual-books/{filename}") as f:
+                        book_data = [json.loads(line) for line in f.readlines()]
+
+                    with open(f"progress/{course}.txt") as f:
+                        last_chapter, last_topic, last_subtopic = [
+                            line.strip() for line in f.readlines()
+                        ][-1].split(",")
+
+                        print("Resuming from", last_chapter, last_topic, last_subtopic)
+
+                    for configuration_index, configuration in enumerate(book_data):
+                        if (
+                            configuration["chapter"] == last_chapter
+                            and configuration["topic"] == last_topic
+                            and configuration["subtopic"] == last_subtopic
+                        ):
+                            progress_index = configuration_index
+                            break
+
+                    if progress_index == len(book_data) - 1:
+                        print(f"Skipping {course} because it already exists")
+                        continue
 
             print("Generating", course)
             with open(f"jsonl/individual-books/{filename}") as f:
                 book_data = [json.loads(line) for line in f.readlines()]
-                write_book(course, book_data)
+                progress_chapter = book_data[progress_index]["chapter"]
+                progress_topic = book_data[progress_index]["topic"]
+                progress_subtopic = book_data[progress_index]["subtopic"]
+
+                write_book(
+                    course,
+                    book_data[progress_index:],
+                    progress_chapter,
+                    progress_topic,
+                    progress_subtopic,
+                )
                 break
 
 
